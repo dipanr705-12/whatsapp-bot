@@ -11,6 +11,7 @@ app.use(express.urlencoded({ extended: true }));
 
 let currentQR = null;
 let isConnected = false;
+let pairingCode = null;
 let lastPhotoForwarded = null;
 let botStartTime = Date.now();
 
@@ -58,11 +59,13 @@ client.on('ready', () => {
     console.log('Bot is ready and listening for incoming photos!');
     isConnected = true;
     currentQR = null;
+    pairingCode = null;
 });
 
 client.on('disconnected', async (reason) => {
     console.log('Bot was disconnected:', reason);
     isConnected = false;
+    pairingCode = null;
     handleFatalCrash();
 });
 
@@ -85,7 +88,7 @@ client.on('message', async (msg) => {
                     time: new Date().toLocaleTimeString()
                 };
                 console.log('Successfully forwarded photo!');
-                await msg.reply('✅ Photo received and forwarded successfully!');
+                await msg.reply('âœ… Photo received and forwarded successfully!');
             }
         } catch (error) {
             console.error('Error handling media message:', error);
@@ -124,15 +127,15 @@ function getDashboard(status) {
             <div class="card status-online">
                 <div class="badge">ONLINE</div>
                 <h1>Bot is Active</h1>
-                <p>Forwarding photos to <strong>\${targetNumber.split('@')[0]}</strong></p>
+                <p>Forwarding photos to <strong>${targetNumber.split('@')[0]}</strong></p>
                 <div class="stats">
                     <div class="stat-item">
                         <span class="label">Uptime</span>
-                        <span class="value">\${uptime} mins</span>
+                        <span class="value">${uptime} mins</span>
                     </div>
                     <div class="stat-item">
                         <span class="label">Last Forward</span>
-                        <span class="value">\${lastPhotoForwarded ? lastPhotoForwarded.time : 'None yet'}</span>
+                        <span class="value">${lastPhotoForwarded ? lastPhotoForwarded.time : 'None yet'}</span>
                     </div>
                 </div>
                 <div class="actions">
@@ -140,29 +143,47 @@ function getDashboard(status) {
                 </div>
                 <div id="edit-form" style="display:none; margin-top: 20px;">
                     <form action="/set-number" method="POST" class="setup-form">
-                        <input type="text" name="number" value="\${targetNumber.split('@')[0]}" required />
+                        <input type="text" name="number" value="${targetNumber.split('@')[0]}" required />
                         <button type="submit">Update</button>
                     </form>
                 </div>
             </div>
         `;
     } else if (status === 'qr') {
-        content = `
-            <div class="card">
+        let authContent = '';
+        if (pairingCode) {
+            authContent = `
+                <div class="badge badge-warning">PAIRING CODE</div>
+                <h1>Enter this code in WhatsApp</h1>
+                <h2 style="letter-spacing: 5px; color: var(--primary); font-size: 32px; background: rgba(255,255,255,0.1); padding: 15px; border-radius: 12px; margin: 20px 0;">${pairingCode}</h2>
+                <p class="hint">Open WhatsApp > Linked Devices > Link with Phone Number Instead</p>
+                <form action="/request-pairing" method="POST" class="setup-form" style="margin-top: 20px;">
+                    <input type="hidden" name="clear" value="true">
+                    <button type="submit" class="btn-secondary">Go Back to QR</button>
+                </form>
+            `;
+        } else {
+            authContent = `
                 <div class="badge badge-warning">AUTHENTICATION REQUIRED</div>
                 <h1>Link your WhatsApp</h1>
-                <p>Scan this QR code with your phone to start the bot.</p>
-                <div class="qr-container">
-                    <img src="\${currentQR}" alt="QR Code" />
-                    <div class="scan-line"></div>
-                </div>
-                <p class="hint">Go to WhatsApp > Linked Devices > Link a Device</p>
+                <p>To connect the bot, please enter the phone number of the device you want to link.</p>
+                
+                <form action="/request-pairing" method="POST" class="setup-form" style="margin-top: 20px;">
+                    <input type="text" name="phoneNumber" placeholder="e.g. 918250885181" required />
+                    <button type="submit">Get Pairing Code</button>
+                </form>
+            `;
+        }
+
+        content = `
+            <div class="card">
+                ${authContent}
                 <div class="actions" style="margin-top: 20px;">
-                    <button onclick="toggleEdit()" class="btn-secondary">Change Recipient (\${targetNumber.split('@')[0]})</button>
+                    <button onclick="toggleEdit()" class="btn-secondary">Change Recipient (${targetNumber.split('@')[0]})</button>
                 </div>
                 <div id="edit-form" style="display:none; margin-top: 20px;">
                     <form action="/set-number" method="POST" class="setup-form">
-                        <input type="text" name="number" value="\${targetNumber.split('@')[0]}" required />
+                        <input type="text" name="number" value="${targetNumber.split('@')[0]}" required />
                         <button type="submit">Update</button>
                     </form>
                 </div>
@@ -180,14 +201,14 @@ function getDashboard(status) {
 
     const refreshMeta = (!targetNumber || status === 'loading') ? '' : '<meta http-equiv="refresh" content="10">';
 
-    return \`
+    return `
         <!DOCTYPE html>
         <html lang="en">
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>WhatsApp Bot Dashboard</title>
-            \${refreshMeta}
+            ${refreshMeta}
             <style>
                 :root {
                     --bg: #0f172a;
@@ -295,13 +316,13 @@ function getDashboard(status) {
                     const form = document.getElementById('edit-form');
                     form.style.display = form.style.display === 'none' ? 'block' : 'none';
                 }
-            <\/script>
+            </script>
         </head>
         <body>
-            <div class="container">\${content}</div>
+            <div class="container">${content}</div>
         </body>
         </html>
-    \`;
+    `;
 }
 
 // Routes
@@ -319,13 +340,13 @@ app.post('/set-number', (req, res) => {
     let number = req.body.number.trim();
     if (number) {
         // Clean and format the number
-        number = number.replace(/\\D/g, ''); // Remove non-numeric characters
-        targetNumber = \`\${number}@c.us\`;
+        number = number.replace(/\D/g, ''); // Remove non-numeric characters
+        targetNumber = `${number}@c.us`;
         
         // Save to config
         try {
             fs.writeFileSync(configPath, JSON.stringify({ targetNumber }, null, 2));
-            console.log(\`\\n[Config] Updated target number to: \${targetNumber}\`);
+            console.log(`\n[Config] Updated target number to: ${targetNumber}`);
         } catch (e) {
             console.error('Error saving config:', e);
         }
@@ -333,8 +354,33 @@ app.post('/set-number', (req, res) => {
     res.redirect('/');
 });
 
+app.post('/request-pairing', async (req, res) => {
+    if (req.body.clear) {
+        pairingCode = null;
+        return res.redirect('/');
+    }
+    let number = req.body.phoneNumber ? req.body.phoneNumber.trim() : '';
+    if (number && !isConnected) {
+        number = number.replace(/\D/g, '');
+        try {
+            console.log(`Requesting pairing code for ${number}...`);
+            let code = await client.requestPairingCode(number);
+            // Format pairing code with a dash if it's 8 characters
+            if (code && code.length === 8) {
+                code = code.substring(0, 4) + '-' + code.substring(4);
+            }
+            pairingCode = code;
+            console.log(`Pairing code received: ${pairingCode}`);
+        } catch (error) {
+            console.error('Error requesting pairing code:', error);
+            pairingCode = 'ERROR';
+        }
+    }
+    res.redirect('/');
+});
+
 app.listen(port, () => {
-    console.log(\`\\n==============================================\`);
-    console.log(\`🚀 Web server is running at port \${port}\`);
-    console.log(\`==============================================\\n\`);
+    console.log(`\n==============================================`);
+    console.log(`ðŸš€ Web server is running at port ${port}`);
+    console.log(`==============================================\n`);
 });
