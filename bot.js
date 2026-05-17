@@ -15,6 +15,14 @@ let pairingCode = null;
 let lastPhotoForwarded = null;
 let botStartTime = Date.now();
 
+// Process safety nets to prevent infinite crash loops
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+process.on('uncaughtException', (err, origin) => {
+    console.error('Uncaught Exception at:', origin, 'error:', err);
+});
+
 // Persistent Configuration
 const configPath = path.join(__dirname, 'config.json');
 let targetNumber = '';
@@ -96,7 +104,9 @@ client.on('message', async (msg) => {
     }
 });
 
-client.initialize();
+client.initialize().catch(err => {
+    console.error('Failed to initialize WhatsApp Web client:', err);
+});
 
 function handleFatalCrash() {
     console.log('\n[!] Triggering clean reboot...');
