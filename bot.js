@@ -166,9 +166,14 @@ function getDashboard(status) {
             authContent = `
                 <div class="badge badge-warning">AUTHENTICATION REQUIRED</div>
                 <h1>Link your WhatsApp</h1>
-                <p>To connect the bot, please enter the phone number of the device you want to link.</p>
-                
-                <form action="/request-pairing" method="POST" class="setup-form" style="margin-top: 20px;">
+                <p>Scan this QR code with your phone to start the bot.</p>
+                <div class="qr-container">
+                    <img src="${currentQR}" alt="QR Code" />
+                    <div class="scan-line"></div>
+                </div>
+                <hr style="border: 0; height: 1px; background: rgba(255,255,255,0.1); margin: 20px 0;">
+                <p style="margin-bottom: 10px;"><b>OR</b> Use Phone Number</p>
+                <form action="/request-pairing" method="POST" class="setup-form">
                     <input type="text" name="phoneNumber" placeholder="e.g. 918250885181" required />
                     <button type="submit">Get Pairing Code</button>
                 </form>
