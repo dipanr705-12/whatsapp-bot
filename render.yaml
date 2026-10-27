@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: whatsapp-bot
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 3000
+      - key: NODE_ENV
+        value: production
+      # Optional: pre-set your target phone number here so it survives restarts
+      # - key: TARGET_NUMBER
+      #   value: "91XXXXXXXXXX@c.us"
