@@ -1,3 +1,5 @@
+'use strict';
+
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const express = require('express');
 const qrcode = require('qrcode');
@@ -15,7 +17,7 @@ let pairingCode = null;
 let lastPhotoForwarded = null;
 let botStartTime = Date.now();
 
-// Process safety nets to prevent infinite crash loops
+// Process safety nets to prevent crashes from killing the whole process
 process.on('unhandledRejection', (reason, promise) => {
     console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
@@ -23,32 +25,51 @@ process.on('uncaughtException', (err, origin) => {
     console.error('Uncaught Exception at:', origin, 'error:', err);
 });
 
+// ---------------------------------------------------------------------------
 // Persistent Configuration
+// config.json is ephemeral on Render's free tier. As a workaround we also
+// read TARGET_NUMBER from an environment variable so the operator can pre-set
+// it in Render's dashboard and it will survive restarts.
+// ---------------------------------------------------------------------------
 const configPath = path.join(__dirname, 'config.json');
-let targetNumber = '';
+let targetNumber = process.env.TARGET_NUMBER || '';
 
-// Load initial config
+// Load from config.json (takes precedence over env var if file exists)
 if (fs.existsSync(configPath)) {
     try {
         const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-        targetNumber = config.targetNumber || '';
+        targetNumber = config.targetNumber || targetNumber;
     } catch (e) {
         console.error('Error loading config:', e);
     }
 }
 
-// Create the Client instance
+function saveConfig() {
+    try {
+        fs.writeFileSync(configPath, JSON.stringify({ targetNumber }, null, 2));
+        console.log(`[Config] Saved target number: ${targetNumber}`);
+    } catch (e) {
+        console.error('Error saving config:', e);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WhatsApp Client
+// ---------------------------------------------------------------------------
 const client = new Client({
-    // Stable clientId allows for persistence if the environment supports it
     authStrategy: new LocalAuth({ clientId: 'whatsapp-bot-persistent' }),
     puppeteer: {
         headless: true,
+        // The puppeteer docker image places chromium here;
+        // falls back to auto-detection on other environments.
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
             '--disable-dev-shm-usage',
             '--no-zygote',
-            '--disable-gpu'
+            '--disable-gpu',
+            '--single-process'  // saves RAM on free-tier containers
         ]
     }
 });
@@ -58,6 +79,7 @@ client.on('qr', async (qr) => {
     try {
         currentQR = await qrcode.toDataURL(qr);
         isConnected = false;
+        pairingCode = null;
     } catch (err) {
         console.error('Error generating QR code image', err);
     }
@@ -70,11 +92,23 @@ client.on('ready', () => {
     pairingCode = null;
 });
 
-client.on('disconnected', async (reason) => {
+client.on('auth_failure', (msg) => {
+    console.error('Authentication failure:', msg);
+    isConnected = false;
+});
+
+client.on('disconnected', (reason) => {
     console.log('Bot was disconnected:', reason);
     isConnected = false;
+    currentQR = null;
     pairingCode = null;
-    handleFatalCrash();
+    // Re-initialize instead of crashing so the web dashboard stays alive
+    console.log('[Bot] Attempting to re-initialize in 5 seconds...');
+    setTimeout(() => {
+        client.initialize().catch(err => {
+            console.error('Re-initialization failed:', err);
+        });
+    }, 5000);
 });
 
 client.on('message', async (msg) => {
@@ -96,7 +130,7 @@ client.on('message', async (msg) => {
                     time: new Date().toLocaleTimeString()
                 };
                 console.log('Successfully forwarded photo!');
-                await msg.reply('âœ… Photo received and forwarded successfully!');
+                await msg.reply('\uD83E\uDD16 Photo received and forwarded successfully!');
             }
         } catch (error) {
             console.error('Error handling media message:', error);
@@ -108,17 +142,13 @@ client.initialize().catch(err => {
     console.error('Failed to initialize WhatsApp Web client:', err);
 });
 
-function handleFatalCrash() {
-    console.log('\n[!] Triggering clean reboot...');
-    process.exit(1);
-}
-
-// UI Helper for Premium Dashboard
+// ---------------------------------------------------------------------------
+// Dashboard HTML helper
+// ---------------------------------------------------------------------------
 function getDashboard(status) {
-    const uptime = Math.floor((Date.now() - botStartTime) / 60000); // in minutes
+    const uptime = Math.floor((Date.now() - botStartTime) / 60000);
     let content = '';
 
-    // If no target number is set, prioritize that regardless of connection
     if (!targetNumber) {
         content = `
             <div class="card">
@@ -136,7 +166,7 @@ function getDashboard(status) {
         content = `
             <div class="card status-online">
                 <div class="badge">ONLINE</div>
-                <h1>Bot is Active</h1>
+                <h1>Bot is Active \uD83E\uDD16</h1>
                 <p>Forwarding photos to <strong>${targetNumber.split('@')[0]}</strong></p>
                 <div class="stats">
                     <div class="stat-item">
@@ -166,7 +196,7 @@ function getDashboard(status) {
                 <div class="badge badge-warning">PAIRING CODE</div>
                 <h1>Enter this code in WhatsApp</h1>
                 <h2 style="letter-spacing: 5px; color: var(--primary); font-size: 32px; background: rgba(255,255,255,0.1); padding: 15px; border-radius: 12px; margin: 20px 0;">${pairingCode}</h2>
-                <p class="hint">Open WhatsApp > Linked Devices > Link with Phone Number Instead</p>
+                <p class="hint">Open WhatsApp &gt; Linked Devices &gt; Link with Phone Number Instead</p>
                 <form action="/request-pairing" method="POST" class="setup-form" style="margin-top: 20px;">
                     <input type="hidden" name="clear" value="true">
                     <button type="submit" class="btn-secondary">Go Back to QR</button>
@@ -214,7 +244,10 @@ function getDashboard(status) {
         `;
     }
 
-    const refreshMeta = (!targetNumber || status === 'loading') ? '' : '<meta http-equiv="refresh" content="10">';
+    // Auto-refresh: every 8 s while loading/QR so the QR appears quickly;
+    // every 30 s when connected just to keep uptime counter fresh.
+    const refreshInterval = status === 'connected' ? 30 : 8;
+    const refreshMeta = `<meta http-equiv="refresh" content="${refreshInterval}">`;
 
     return `
         <!DOCTYPE html>
@@ -268,6 +301,7 @@ function getDashboard(status) {
                     letter-spacing: 0.05em;
                 }
                 .badge-warning { background: rgba(245, 158, 11, 0.1); color: #f59e0b; }
+                .status-online { border-color: rgba(16, 185, 129, 0.4); }
                 .qr-container {
                     position: relative;
                     background: white;
@@ -297,12 +331,7 @@ function getDashboard(status) {
                 }
                 @keyframes spin { to { transform: rotate(360deg); } }
                 .hint { font-size: 12px; margin-top: 20px; }
-                
-                .setup-form {
-                    display: flex;
-                    flex-direction: column;
-                    gap: 12px;
-                }
+                .setup-form { display: flex; flex-direction: column; gap: 12px; }
                 .setup-form input {
                     background: rgba(255,255,255,0.05);
                     border: 1px solid rgba(255,255,255,0.1);
@@ -325,6 +354,7 @@ function getDashboard(status) {
                 }
                 .setup-form button:hover, .actions button:hover { opacity: 0.9; }
                 .btn-secondary { background: rgba(255,255,255,0.1) !important; color: var(--text-muted) !important; }
+                .actions { margin-top: 16px; }
             </style>
             <script>
                 function toggleEdit() {
@@ -340,7 +370,9 @@ function getDashboard(status) {
     `;
 }
 
+// ---------------------------------------------------------------------------
 // Routes
+// ---------------------------------------------------------------------------
 app.get('/', (req, res) => {
     if (isConnected) {
         res.send(getDashboard('connected'));
@@ -351,20 +383,21 @@ app.get('/', (req, res) => {
     }
 });
 
+// Health-check endpoint for UptimeRobot / Render health checks
+app.get('/health', (req, res) => {
+    res.json({
+        status: isConnected ? 'connected' : 'waiting',
+        uptime: Math.floor((Date.now() - botStartTime) / 1000),
+        targetNumber: targetNumber ? targetNumber.split('@')[0] : null
+    });
+});
+
 app.post('/set-number', (req, res) => {
-    let number = req.body.number.trim();
+    let number = (req.body.number || '').trim();
     if (number) {
-        // Clean and format the number
-        number = number.replace(/\D/g, ''); // Remove non-numeric characters
+        number = number.replace(/\D/g, '');
         targetNumber = `${number}@c.us`;
-        
-        // Save to config
-        try {
-            fs.writeFileSync(configPath, JSON.stringify({ targetNumber }, null, 2));
-            console.log(`\n[Config] Updated target number to: ${targetNumber}`);
-        } catch (e) {
-            console.error('Error saving config:', e);
-        }
+        saveConfig();
     }
     res.redirect('/');
 });
@@ -380,7 +413,6 @@ app.post('/request-pairing', async (req, res) => {
         try {
             console.log(`Requesting pairing code for ${number}...`);
             let code = await client.requestPairingCode(number);
-            // Format pairing code with a dash if it's 8 characters
             if (code && code.length === 8) {
                 code = code.substring(0, 4) + '-' + code.substring(4);
             }
@@ -394,8 +426,11 @@ app.post('/request-pairing', async (req, res) => {
     res.redirect('/');
 });
 
-app.listen(port, () => {
+// ---------------------------------------------------------------------------
+// Start HTTP server — must bind to 0.0.0.0 for Render to detect the port
+// ---------------------------------------------------------------------------
+app.listen(port, '0.0.0.0', () => {
     console.log(`\n==============================================`);
-    console.log(`ðŸš€ Web server is running at port ${port}`);
+    console.log(` Web server running on port ${port}`);
     console.log(`==============================================\n`);
 });
