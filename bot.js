@@ -244,10 +244,8 @@ function getDashboard(status) {
         `;
     }
 
-    // Auto-refresh: every 8 s while loading/QR so the QR appears quickly;
-    // every 30 s when connected just to keep uptime counter fresh.
-    const refreshInterval = status === 'connected' ? 30 : 8;
-    const refreshMeta = `<meta http-equiv="refresh" content="${refreshInterval}">`;
+    // No auto-refresh — user controls when to reload the page.
+    const refreshMeta = '';
 
     return `
         <!DOCTYPE html>
