@@ -13,6 +13,7 @@ app.use(express.urlencoded({ extended: true }));
 
 let currentQR = null;
 let isConnected = false;
+let isAuthenticating = false;
 let pairingCode = null;
 let lastPhotoForwarded = null;
 let botStartTime = Date.now();
@@ -79,6 +80,7 @@ client.on('qr', async (qr) => {
     try {
         currentQR = await qrcode.toDataURL(qr);
         isConnected = false;
+        isAuthenticating = false;
         pairingCode = null;
         console.log('QR ready. Open the dashboard to scan.');
     } catch (err) {
@@ -86,9 +88,17 @@ client.on('qr', async (qr) => {
     }
 });
 
+client.on('authenticated', () => {
+    console.log('\n🔐 QR Scanned! Authenticating...');
+    isAuthenticating = true;
+    currentQR = null;
+    pairingCode = null;
+});
+
 client.on('ready', () => {
     console.log('\n✅ Bot is READY and listening for incoming photos!');
     isConnected = true;
+    isAuthenticating = false;
     currentQR = null;
     pairingCode = null;
 });
@@ -101,6 +111,7 @@ client.on('auth_failure', (msg) => {
 client.on('disconnected', (reason) => {
     console.log('⚠️  Bot disconnected:', reason);
     isConnected = false;
+    isAuthenticating = false;
     currentQR = null;
     pairingCode = null;
     console.log('[Bot] Re-initializing in 5 seconds...');
@@ -220,16 +231,19 @@ function getDashboard(status) {
     } else {
         content = `
             <div class="card">
-                <div class="loading-spinner"></div>
-                <h1>Waking up...</h1>
-                <p>Starting Puppeteer and WhatsApp session. This can take 1&ndash;2 minutes on Render's free tier.</p>
+                <div class="badge" style="background:rgba(59,130,246,0.1);color:#3b82f6;">LINKING DEVICE</div>
+                <h1>Almost there! &#x1F517;</h1>
+                <div class="loading-spinner" style="border-top-color:#3b82f6;margin-top:20px;"></div>
+                <p style="margin-top:20px;">QR scanned! Loading your WhatsApp chats &amp; contacts...<br><small>This takes 1&ndash;2 minutes on first link.</small></p>
+                <p class="hint">Do NOT close this page or your phone's WhatsApp.</p>
             </div>`;
     }
 
-    // Auto-refresh only during setup/QR/loading — NOT when connected
+    // Auto-refresh: server-side meta as fallback. JS polling handles fast detection.
     let refreshMeta = '';
     if (status === 'loading') refreshMeta = '<meta http-equiv="refresh" content="8">';
     if (status === 'qr' && !pairingCode) refreshMeta = '<meta http-equiv="refresh" content="15">';
+    if (status === 'authenticating') refreshMeta = '<meta http-equiv="refresh" content="5">';
 
     return `<!DOCTYPE html>
         <html lang="en">
@@ -273,6 +287,13 @@ function getDashboard(status) {
                     const f = document.getElementById('edit-form');
                     f.style.display = f.style.display === 'none' ? 'block' : 'none';
                 }
+                // Poll /health every 3s and reload as soon as bot is connected
+                (function poll() {
+                    fetch('/health').then(r => r.json()).then(data => {
+                        if (data.status === 'connected') { location.reload(); return; }
+                        setTimeout(poll, 3000);
+                    }).catch(() => setTimeout(poll, 5000));
+                })();
             </script>
         </head>
         <body><div class="container">${content}</div></body>
@@ -283,14 +304,15 @@ function getDashboard(status) {
 // Routes
 // ---------------------------------------------------------------------------
 app.get('/', (req, res) => {
-    if (isConnected)      res.send(getDashboard('connected'));
-    else if (currentQR)   res.send(getDashboard('qr'));
-    else                  res.send(getDashboard('loading'));
+    if (isConnected)           res.send(getDashboard('connected'));
+    else if (isAuthenticating) res.send(getDashboard('authenticating'));
+    else if (currentQR)        res.send(getDashboard('qr'));
+    else                       res.send(getDashboard('loading'));
 });
 
 app.get('/health', (req, res) => {
     res.json({
-        status: isConnected ? 'connected' : 'waiting',
+        status: isConnected ? 'connected' : isAuthenticating ? 'authenticating' : 'waiting',
         uptime: Math.floor((Date.now() - botStartTime) / 1000),
         targetNumber: targetNumber ? targetNumber.split('@')[0] : null
     });
