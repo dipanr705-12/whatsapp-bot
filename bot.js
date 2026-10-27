@@ -318,6 +318,8 @@ app.get('/health', (req, res) => {
     });
 });
 
+app.get('/set-number', (req, res) => res.redirect('/'));
+
 app.post('/set-number', (req, res) => {
     let number = (req.body.number || '').trim().replace(/\D/g, '');
     if (number) {
@@ -326,6 +328,8 @@ app.post('/set-number', (req, res) => {
     }
     res.redirect('/');
 });
+
+app.get('/request-pairing', (req, res) => res.redirect('/'));
 
 app.post('/request-pairing', async (req, res) => {
     if (req.body.clear) {
